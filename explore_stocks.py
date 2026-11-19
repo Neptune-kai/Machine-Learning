@@ -94,7 +94,7 @@ def main():
             SELECT symbol,
                 COUNT(*) AS bar_count,
                 MIN(ts_utc) AS first_bar,
-                MAX(ts_utc) AS last_bar
+                MAX(ts_utc) AS last_bar,
                 MAX(low) AS average_low_price,
                 MIN(high) AS average_high_price,
                 AVG(volume) AS average_bar_volume
