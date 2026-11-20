@@ -12,7 +12,7 @@ DB_URI = "file:////192.168.1.95/CS-CLASSROOM/intraday_5m.sqlite?mode=ro&immutabl
 
 # Customize these after examining which stocks and dates are available.
 STOCK_TO_EXPLORE = "TSLA"
-START_DATE = "2025-01-01"
+START_DATE = "2026-01-25"
 END_DATE = "2026-02-01"
 PREVIEW_ROWS = 15
 
@@ -90,7 +90,7 @@ def main():
         #     LIMIT ?
         # """, (STOCK_TO_EXPLORE, START_DATE, END_DATE, PREVIEW_ROWS))
         
-        query(conn, "e", """
+        query(conn, f"{STOCK_TO_EXPLORE}: MIN-MAX/ AVERAGES", """
             SELECT symbol,
                 COUNT(*) AS bar_count,
                 MIN(ts_utc) AS first_bar,
@@ -102,7 +102,7 @@ def main():
             WHERE ts_utc >= ?
                AND ts_utc < ?
             GROUP BY symbol
-            HAVING COUNT(*) > 20000
+            HAVING bar_count > 300
             ORDER BY bar_count ASC
             
                 """, (START_DATE, END_DATE))
