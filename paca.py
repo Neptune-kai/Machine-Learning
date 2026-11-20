@@ -18,8 +18,10 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed
 
-# 1. Load Credentials (override=True forces .env to replace any cached Windows env vars)
-load_dotenv(override=True)
+# 1. Load Credentials (strictly anchored to the .env file in this script's folder)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(SCRIPT_DIR, ".env")
+load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
@@ -33,14 +35,13 @@ trading_client = TradingClient(API_KEY, SECRET_KEY, paper=IS_PAPER)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
 # 2. File & Strategy Configuration
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(SCRIPT_DIR, "ridge_model.joblib")
 PARAMS_PATH = os.path.join(SCRIPT_DIR, "best_params.json")
 
 FEATURES = ["return_1", "return_3", "hl_spread", "oc_change", "vol_ratio", "ma_dist"]
 
 DAILY_BUY_TARGET = 10      # Target at least 10 buys per trading day
-BUDGET_PER_STOCK = 250.0   # $250 per position (~$2,500 deployed across 10 buys)
+BUDGET_PER_STOCK = 250.0   # Base allocation per stock (scales 1.5x when averages are strong)
 
 # 60-ticker liquid universe so enough intraday signals fire daily
 WATCHLIST = [
@@ -63,11 +64,19 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df["hl_spread"] = (df["high"] - df["low"]) / df["close"]
     df["oc_change"] = (df["close"] - df["open"]) / df["open"]
     df["vol_ratio"] = df["volume"] / df["volume"].rolling(12).mean()
-    df["ma_dist"] = (df["close"] - df["close"].rolling(12).mean()) / df["close"]
+
+    # Moving average distance (1-hour / 12-bar SMA) and slope
+    sma_12 = df["close"].rolling(12).mean()
+    df["ma_dist"] = (df["close"] - sma_12) / sma_12
+    df["ma_slope"] = sma_12.pct_change(3)
+
+    # Shallow drop metric: pullback from rolling 2-hour (24-bar) high
+    rolling_high = df["high"].rolling(24, min_periods=1).max()
+    df["drop_from_high"] = (df["close"] - rolling_high) / rolling_high
     return df
 
 
-def fetch_historical_bars(symbols: list[str], days_back: int = 14) -> pd.DataFrame:
+def fetch_historical_bars(symbols: list[str], days_back: int = 21) -> pd.DataFrame:
     end_dt = datetime.now(timezone.utc)
     start_dt = end_dt - timedelta(days=days_back)
 
@@ -118,45 +127,60 @@ def get_or_train_model(model_path: str):
 
 
 # ==========================================
-# PART B: GENETIC ALGORITHM OPTIMIZER
+# PART B: WALK-FORWARD GENETIC ALGORITHM
 # ==========================================
-def evaluate_fitness(df: pd.DataFrame, genes: dict) -> float:
-    buy_thresh = genes["buy_thresh"]
-    sell_thresh = genes["sell_thresh"]
+def evaluate_fitness(df: pd.DataFrame, genes: dict, target_daily_trades: float = 12.0) -> float:
+    ma_buy_thresh = genes["ma_buy_thresh"]
+    ma_sell_thresh = genes["ma_sell_thresh"]
+    max_drop = genes["max_drop"]
     stop_loss = genes["stop_loss"]
+
     trade_returns = []
+    num_days = df["trade_date"].nunique()
+    if num_days == 0:
+        return -999.0
 
     for (_, _), day_df in df.groupby(["symbol", "trade_date"]):
         in_position = False
         entry_price = 0.0
+
         closes = day_df["close"].values
         preds = day_df["pred_return"].values
+        ma_dists = day_df["ma_dist"].values
+        ma_slopes = day_df["ma_slope"].values
+        drops = day_df["drop_from_high"].values
 
         for i in range(len(day_df)):
             price = closes[i]
-            pred = preds[i]
             is_last_bar = (i == len(day_df) - 1)
 
             if not in_position and not is_last_bar:
-                if pred >= buy_thresh:
+                high_average = (ma_dists[i] >= ma_buy_thresh) and (ma_slopes[i] > 0)
+                shallow_drop = (drops[i] >= max_drop)
+                if high_average and shallow_drop and preds[i] > 0:
                     in_position = True
                     entry_price = price
+
             elif in_position:
                 current_pl = (price - entry_price) / entry_price
-                if current_pl <= stop_loss or pred <= sell_thresh or is_last_bar:
-                    trade_returns.append(current_pl - 0.0002)
+                averages_falling = (ma_dists[i] <= ma_sell_thresh) and (ma_slopes[i] < 0)
+                if averages_falling or current_pl <= stop_loss or is_last_bar:
+                    trade_returns.append(current_pl - 0.0003)
                     in_position = False
 
-    if len(trade_returns) < 30:
+    trades_per_day = len(trade_returns) / num_days
+    if trades_per_day < 5.0 or trades_per_day > 30.0:
         return -999.0
 
     returns_arr = np.array(trade_returns)
-    return float((np.mean(returns_arr) / (np.std(returns_arr) + 1e-6)) * np.sqrt(len(returns_arr)))
+    sharpe = np.mean(returns_arr) / (np.std(returns_arr) + 1e-6)
+    freq_multiplier = 1.0 - (abs(trades_per_day - target_daily_trades) / 30.0)
+    return float(sharpe * max(freq_multiplier, 0.2))
 
 
-def evolve_parameters(model, pop_size: int = 20, generations: int = 40) -> dict:
-    print("Evolving high-frequency parameters via Genetic Algorithm...")
-    raw_df = fetch_historical_bars(WATCHLIST[:15], days_back=14)
+def evolve_parameters(model, pop_size: int = 24, generations: int = 35) -> dict:
+    print("Evolving moving-average & shallow-drop parameters via Genetic Algorithm...")
+    raw_df = fetch_historical_bars(WATCHLIST[:20], days_back=21)
 
     chunks = [
         compute_features(g).dropna()
@@ -166,51 +190,71 @@ def evolve_parameters(model, pop_size: int = 20, generations: int = 40) -> dict:
     clean_df = pd.concat(chunks, ignore_index=True).sort_values("timestamp")
     clean_df["pred_return"] = model.predict(clean_df[FEATURES])
 
-    split = int(len(clean_df) * 0.7)
-    train_df, test_df = clean_df.iloc[:split], clean_df.iloc[split:]
+    n = len(clean_df)
+    train_df = clean_df.iloc[:int(n * 0.6)]
+    val_df = clean_df.iloc[int(n * 0.6):int(n * 0.8)]
+    test_df = clean_df.iloc[int(n * 0.8):]
+
+    w_size = len(train_df) // 3
+    train_windows = [train_df.iloc[i * w_size:(i + 1) * w_size] for i in range(3)]
+
+    def multi_window_fitness(genes: dict) -> float:
+        scores = [evaluate_fitness(w, genes) for w in train_windows]
+        if any(s <= -900 for s in scores):
+            return -999.0
+        return float(np.mean(scores) - 0.5 * np.std(scores))
 
     population = [
         {
-            "buy_thresh": random.uniform(0.00002, 0.0004),
-            "sell_thresh": random.uniform(-0.0005, -0.00002),
-            "stop_loss": random.uniform(-0.03, -0.005),
+            "ma_buy_thresh": random.uniform(0.0005, 0.0060),
+            "ma_sell_thresh": random.uniform(-0.0050, 0.0000),
+            "max_drop": random.uniform(-0.0150, -0.0010),
+            "stop_loss": random.uniform(-0.0250, -0.0060),
         }
         for _ in range(pop_size)
     ]
 
-    for _ in range(generations):
-        scored = sorted([(evaluate_fitness(train_df, ind), ind) for ind in population], key=lambda x: x[0], reverse=True)
-        survivors = [ind for _, ind in scored[:4]]
-        next_gen = survivors.copy()
+    best_val_score = -999.0
+    best_generalized_genes = population[0]
 
+    for _ in range(generations):
+        scored = sorted([(multi_window_fitness(ind), ind) for ind in population], key=lambda x: x[0], reverse=True)
+        survivors = [ind for _, ind in scored[:5]]
+
+        val_score = evaluate_fitness(val_df, survivors[0])
+        if val_score > best_val_score:
+            best_val_score = val_score
+            best_generalized_genes = survivors[0].copy()
+
+        next_gen = survivors.copy()
         while len(next_gen) < pop_size:
             p1, p2 = random.sample(survivors, 2)
             child = {k: random.choice([p1[k], p2[k]]) for k in p1}
             if random.random() < 0.25:
-                child["buy_thresh"] = float(np.clip(child["buy_thresh"] * random.uniform(0.8, 1.2), 0.00001, 0.0005))
+                child["ma_buy_thresh"] = float(np.clip(child["ma_buy_thresh"] * random.uniform(0.85, 1.15), 0.0001, 0.01))
             if random.random() < 0.25:
-                child["sell_thresh"] = float(np.clip(child["sell_thresh"] * random.uniform(0.8, 1.2), -0.001, -0.00001))
+                child["ma_sell_thresh"] = float(np.clip(child["ma_sell_thresh"] * random.uniform(0.85, 1.15), -0.01, 0.001))
             if random.random() < 0.25:
-                child["stop_loss"] = float(np.clip(child["stop_loss"] * random.uniform(0.8, 1.2), -0.05, -0.003))
+                child["max_drop"] = float(np.clip(child["max_drop"] * random.uniform(0.85, 1.15), -0.03, -0.0005))
+            if random.random() < 0.25:
+                child["stop_loss"] = float(np.clip(child["stop_loss"] * random.uniform(0.85, 1.15), -0.04, -0.004))
             next_gen.append(child)
 
         population = next_gen
 
-    best_train, best_genes = max([(evaluate_fitness(train_df, ind), ind) for ind in population], key=lambda x: x[0])
-    out_sample = evaluate_fitness(test_df, best_genes)
-
-    print(f"Evolved Params: {best_genes}")
-    print(f"In-Sample Fitness: {best_train:.3f} | Out-of-Sample Fitness: {out_sample:.3f}")
+    final_test_score = evaluate_fitness(test_df, best_generalized_genes)
+    print(f"Best Generalized Params: {best_generalized_genes}")
+    print(f"Validation Fitness: {best_val_score:.3f} | Unseen Test Fitness: {final_test_score:.3f}")
 
     with open(PARAMS_PATH, "w") as f:
-        json.dump(best_genes, f, indent=2)
-    return best_genes
+        json.dump(best_generalized_genes, f, indent=2)
+    return best_generalized_genes
 
 
 # ==========================================
 # PART C: ALPACA LIVE / PAPER EXECUTION
 # ==========================================
-def get_live_predictions(symbols: list[str], model) -> dict[str, tuple[float, float]]:
+def get_live_metrics(symbols: list[str], model) -> dict[str, dict]:
     if not symbols:
         return {}
 
@@ -227,21 +271,26 @@ def get_live_predictions(symbols: list[str], model) -> dict[str, tuple[float, fl
         return {}
 
     bars_df = bars_df.reset_index()
-    predictions = {}
+    metrics = {}
 
     for symbol, group in bars_df.groupby("symbol"):
         if len(group) < 15:
             continue
         feat_df = compute_features(group)
-        latest_row = feat_df.iloc[[-1]][FEATURES]
-        if latest_row.isna().any().any():
+        latest = feat_df.iloc[-1]
+        if latest[FEATURES + ["ma_slope", "drop_from_high"]].isna().any():
             continue
 
-        pred_return = float(model.predict(latest_row)[0])
-        latest_close = float(feat_df.iloc[-1]["close"])
-        predictions[symbol] = (pred_return, latest_close)
+        pred_return = float(model.predict(feat_df.iloc[[-1]][FEATURES])[0])
+        metrics[symbol] = {
+            "pred": pred_return,
+            "price": float(latest["close"]),
+            "ma_dist": float(latest["ma_dist"]),
+            "ma_slope": float(latest["ma_slope"]),
+            "drop": float(latest["drop_from_high"]),
+        }
 
-    return predictions
+    return metrics
 
 
 def count_todays_buys() -> int:
@@ -253,14 +302,13 @@ def count_todays_buys() -> int:
 
 
 def run_alpaca_bot(model, params: dict):
-    # Verify account is active before doing anything
     account = trading_client.get_account()
     print(f"Account #{account.account_number} | Status: {account.status.value} | Buying Power: ${float(account.buying_power):,.2f}")
 
     if account.status != AccountStatus.ACTIVE or account.trading_blocked:
         raise RuntimeError(
             f"Account {account.account_number} cannot trade (status={account.status.value}, blocked={account.trading_blocked}). "
-            "Open a new Paper Account in Alpaca and update your .env keys."
+            "Check your .env file or GitHub Secrets."
         )
 
     clock = trading_client.get_clock()
@@ -272,71 +320,74 @@ def run_alpaca_bot(model, params: dict):
     held_symbols = {p.symbol for p in held_positions}
     all_symbols = list(set(WATCHLIST) | held_symbols)
 
-    predictions = get_live_predictions(all_symbols, model)
-    print(f"Scored {len(predictions)} symbols from live 5m bars.")
+    metrics = get_live_metrics(all_symbols, model)
+    print(f"Analyzed moving averages & pullbacks for {len(metrics)} symbols.")
 
-    # 1. Sell weak positions or negative forecasts
+    # 1. SELL when averages get lower or stop-loss hits
     for p in held_positions:
         pl_pct = float(p.unrealized_plpc)
-        pred_return = predictions.get(p.symbol, (0.0, 0.0))[0]
+        m = metrics.get(p.symbol)
 
         if pl_pct <= params["stop_loss"]:
             print(f"STOP-LOSS SELL {p.symbol}: Loss of {pl_pct * 100:.2f}%")
             trading_client.close_position(p.symbol)
-        elif pred_return <= params["sell_thresh"]:
-            print(f"MODEL SELL {p.symbol}: Predicted return {pred_return * 100:.4f}%")
+        elif m and m["ma_dist"] <= params["ma_sell_thresh"] and m["ma_slope"] < 0:
+            print(f"AVG DROP SELL {p.symbol}: MA Dist {m['ma_dist'] * 100:.2f}% | Slope {m['ma_slope'] * 100:.3f}%")
             trading_client.close_position(p.symbol)
 
-    # 2. Check daily buy quota (target at least 10 buys/day)
+    # 2. BUY stocks where averages are high AND price drop from session high is shallow
     buys_today = count_todays_buys()
     remaining_quota = max(0, DAILY_BUY_TARGET - buys_today)
-    print(f"Buys placed so far today: {buys_today} | Remaining to hit {DAILY_BUY_TARGET}: {remaining_quota}")
+    print(f"Buys today: {buys_today} | Remaining to hit {DAILY_BUY_TARGET}: {remaining_quota}")
 
     buying_power = float(account.buying_power)
-    if buying_power < BUDGET_PER_STOCK:
-        print(f"Insufficient buying power (${buying_power:.2f}).")
-        return
-
     open_orders = trading_client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
     excluded = held_symbols | {o.symbol for o in open_orders}
 
-    effective_buy_thresh = min(params["buy_thresh"], 0.0002)
-
     strong_candidates = sorted(
         [
-            (sym, pred, price)
-            for sym, (pred, price) in predictions.items()
-            if sym not in excluded and pred >= effective_buy_thresh and 5 <= price <= 1000
+            (sym, m)
+            for sym, m in metrics.items()
+            if sym not in excluded
+            and m["ma_dist"] >= params["ma_buy_thresh"]
+            and m["ma_slope"] > 0
+            and m["drop"] >= params["max_drop"]
+            and 5 <= m["price"] <= 1000
         ],
-        key=lambda x: x[1],
+        key=lambda x: (x[1]["ma_dist"] + x[1]["drop"]),
         reverse=True,
     )
 
     selected = list(strong_candidates)
     if len(selected) < remaining_quota:
         selected_syms = {s[0] for s in selected}
-        fallback_candidates = sorted(
+        fallback = sorted(
             [
-                (sym, pred, price)
-                for sym, (pred, price) in predictions.items()
-                if sym not in excluded and sym not in selected_syms and pred > 0 and 5 <= price <= 1000
+                (sym, m)
+                for sym, m in metrics.items()
+                if sym not in excluded and sym not in selected_syms and m["ma_slope"] > 0 and 5 <= m["price"] <= 1000
             ],
-            key=lambda x: x[1],
+            key=lambda x: (x[1]["drop"], x[1]["ma_dist"]),
             reverse=True,
         )
-        needed = remaining_quota - len(selected)
-        selected.extend(fallback_candidates[:needed])
+        selected.extend(fallback[: remaining_quota - len(selected)])
 
     max_orders_this_run = max(remaining_quota, min(len(strong_candidates), 15 - buys_today))
 
     orders_placed = 0
-    for symbol, pred_return, price in selected:
+    for symbol, m in selected:
         if orders_placed >= max_orders_this_run or buying_power < BUDGET_PER_STOCK:
             break
 
-        qty = int(BUDGET_PER_STOCK // price)
+        allocation = BUDGET_PER_STOCK * 1.5 if m["ma_dist"] >= (params["ma_buy_thresh"] * 2) else BUDGET_PER_STOCK
+        allocation = min(allocation, buying_power)
+        qty = int(allocation // m["price"])
+
         if qty > 0:
-            print(f"BUY SIGNAL [{orders_placed + 1}/{max_orders_this_run}]: {symbol} @ ${price:.2f} | Pred: +{pred_return * 100:.4f}% | Qty: {qty}")
+            print(
+                f"BUY [{orders_placed + 1}/{max_orders_this_run}]: {symbol} @ ${m['price']:.2f} | "
+                f"MA Dist: +{m['ma_dist'] * 100:.2f}% | Drop: {m['drop'] * 100:.2f}% | Qty: {qty}"
+            )
             trading_client.submit_order(
                 MarketOrderRequest(
                     symbol=symbol,
@@ -345,19 +396,25 @@ def run_alpaca_bot(model, params: dict):
                     time_in_force=TimeInForce.DAY,
                 )
             )
-            buying_power -= qty * price
+            buying_power -= qty * m["price"]
             orders_placed += 1
 
-    print(f"Run complete. Orders placed this run: {orders_placed} | Total today: {buys_today + orders_placed}")
+    print(f"Run complete. Orders placed: {orders_placed} | Total today: {buys_today + orders_placed}")
 
 
 if __name__ == "__main__":
     ridge_model = get_or_train_model(MODEL_PATH)
 
+    # Re-evolve automatically if best_params.json doesn't exist or uses old parameter keys
+    required_keys = {"ma_buy_thresh", "ma_sell_thresh", "max_drop", "stop_loss"}
     if os.path.exists(PARAMS_PATH):
         with open(PARAMS_PATH, "r") as f:
             active_params = json.load(f)
-        print(f"Loaded evolved parameters: {active_params}")
+        if not required_keys.issubset(active_params.keys()):
+            print("Old parameter schema detected. Re-evolving with moving-average & shallow-drop genes...")
+            active_params = evolve_parameters(ridge_model)
+        else:
+            print(f"Loaded evolved parameters: {active_params}")
     else:
         active_params = evolve_parameters(ridge_model)
 
