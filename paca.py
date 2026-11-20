@@ -435,5 +435,3 @@ if __name__ == "__main__":
 
     print(f"Connected to Alpaca ({'PAPER' if IS_PAPER else 'LIVE'} mode).")
     run_ensemble_bot(ensemble_bundle)
-    print(f"Connected to Alpaca ({'PAPER' if IS_PAPER else 'LIVE'} mode).")
-    run_autonomous_bot(ridge_model, autonomous_params)

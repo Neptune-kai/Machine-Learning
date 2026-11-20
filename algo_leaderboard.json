@@ -1,0 +1,122 @@
+{
+  "algo_17_ridge_ml": {
+    "sharpe": 0.004,
+    "win_rate": 0.4679,
+    "signals_fired": 1494,
+    "meta_weight": -0.000719
+  },
+  "algo_16_gap_fade": {
+    "sharpe": -0.0156,
+    "win_rate": 0.4558,
+    "signals_fired": 1448,
+    "meta_weight": -8.6e-05
+  },
+  "algo_03_vwap_reversion": {
+    "sharpe": -0.0636,
+    "win_rate": 0.4376,
+    "signals_fired": 5119,
+    "meta_weight": 0.000785
+  },
+  "algo_12_volume_climax": {
+    "sharpe": -0.0851,
+    "win_rate": 0.4163,
+    "signals_fired": 3377,
+    "meta_weight": 0.000295
+  },
+  "algo_19_grad_boost_ml": {
+    "sharpe": -0.1013,
+    "win_rate": 0.4055,
+    "signals_fired": 1334,
+    "meta_weight": 0.000782
+  },
+  "algo_20_neural_net_ml": {
+    "sharpe": -0.111,
+    "win_rate": 0.4132,
+    "signals_fired": 3732,
+    "meta_weight": 6e-05
+  },
+  "algo_07_rsi_oversold": {
+    "sharpe": -0.1177,
+    "win_rate": 0.3879,
+    "signals_fired": 1521,
+    "meta_weight": -0.001884
+  },
+  "algo_18_random_forest_ml": {
+    "sharpe": -0.1225,
+    "win_rate": 0.3955,
+    "signals_fired": 1206,
+    "meta_weight": -0.000468
+  },
+  "algo_05_bollinger_squeeze": {
+    "sharpe": -0.139,
+    "win_rate": 0.3989,
+    "signals_fired": 925,
+    "meta_weight": 0.000455
+  },
+  "algo_14_shallow_pullback": {
+    "sharpe": -0.1787,
+    "win_rate": 0.3822,
+    "signals_fired": 1316,
+    "meta_weight": 0.000352
+  },
+  "algo_08_rsi_momentum": {
+    "sharpe": -0.1845,
+    "win_rate": 0.3884,
+    "signals_fired": 1259,
+    "meta_weight": 0.000754
+  },
+  "algo_15_vol_expansion": {
+    "sharpe": -0.2052,
+    "win_rate": 0.3764,
+    "signals_fired": 2779,
+    "meta_weight": 0.000276
+  },
+  "algo_09_ema_cross": {
+    "sharpe": -0.2247,
+    "win_rate": 0.3742,
+    "signals_fired": 1200,
+    "meta_weight": -0.000882
+  },
+  "algo_10_ema_ribbon": {
+    "sharpe": -0.2264,
+    "win_rate": 0.3892,
+    "signals_fired": 1110,
+    "meta_weight": -2.4e-05
+  },
+  "algo_01_fast_momentum": {
+    "sharpe": -0.2511,
+    "win_rate": 0.3439,
+    "signals_fired": 2588,
+    "meta_weight": -0.001219
+  },
+  "algo_02_trend_continuation": {
+    "sharpe": -0.2681,
+    "win_rate": 0.3461,
+    "signals_fired": 2109,
+    "meta_weight": 0.000315
+  },
+  "algo_13_high_breakout": {
+    "sharpe": -0.2774,
+    "win_rate": 0.3333,
+    "signals_fired": 228,
+    "meta_weight": 0.000732
+  },
+  "algo_11_macd_surge": {
+    "sharpe": -0.2922,
+    "win_rate": 0.3313,
+    "signals_fired": 2445,
+    "meta_weight": -0.004056
+  },
+  "algo_06_bb_breakout": {
+    "sharpe": -0.3456,
+    "win_rate": 0.3339,
+    "signals_fired": 575,
+    "meta_weight": 0.00043
+  },
+  "algo_04_vwap_breakout": {
+    "sharpe": -0.3565,
+    "win_rate": 0.3103,
+    "signals_fired": 464,
+    "meta_weight": -0.000536
+  }
+}
