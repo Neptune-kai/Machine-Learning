@@ -2,11 +2,7 @@ name: Run Alpaca ML Trading Bot
 
 on:
   schedule:
-    # Runs every 6 hours (at 00:00, 06:00, 12:00, and 18:00 UTC)
-    # Note: 18:00 UTC is 1:00 PM EST / 12:00 PM CST (during US market hours)
     - cron: '0 */6 * * *'
-  
-  # Allows you to manually trigger the bot anytime from the GitHub "Actions" tab
   workflow_dispatch:
 
 jobs:
@@ -21,12 +17,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install alpaca-py scikit-learn pandas numpy joblib python-dotenv
 
       - name: Execute paca.py
         env:
