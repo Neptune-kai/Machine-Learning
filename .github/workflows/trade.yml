@@ -1,0 +1,36 @@
+name: Run Alpaca ML Trading Bot
+
+on:
+  schedule:
+    # Runs every 6 hours (at 00:00, 06:00, 12:00, and 18:00 UTC)
+    # Note: 18:00 UTC is 1:00 PM EST / 12:00 PM CST (during US market hours)
+    - cron: '0 */6 * * *'
+  
+  # Allows you to manually trigger the bot anytime from the GitHub "Actions" tab
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Execute paca.py
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_BASE_URL: ${{ secrets.ALPACA_BASE_URL }}
+        run: python paca.py
